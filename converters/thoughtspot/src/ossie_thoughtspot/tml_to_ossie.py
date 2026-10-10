@@ -1492,6 +1492,43 @@ def _tml_mapping(value, what: str) -> dict:
     return value
 
 
+def _tml_string(value, what: str) -> str | None:
+    """A TML scalar read as a string, or a `ConversionError`.
+
+    Absent is fine -- every caller already has a path for a key that is not
+    there -- but a value of another type reaches `.strip()`, a `set` insertion
+    or a `in` test and raises TypeError/AttributeError instead.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConversionError(f"{what} must be a string, not {type(value).__name__}")
+    return value
+
+
+def _check_physical_column(entry: dict, kind: str) -> dict:
+    """One entry of a Table's `columns[]` / a SQL View's `sql_view_columns[]`.
+
+    `_tml_list` already proved the entry is a mapping; this proves the two parts
+    of it that have no graceful path. A `db_column_properties` of the wrong type
+    is the single largest crash class measured over the shipped fixtures:
+    `(physical.get("db_column_properties") or {}).get("data_type")` reads `.get`
+    off whatever came back. A non-string `name` lands in the `(prefix, name)`
+    tuple that the unsurfaced-column set is built from -- unhashable, so
+    `TypeError: cannot use 'tuple' as a set element` names neither column.
+
+    `db_column_name` and `sql_output_column` are deliberately NOT checked here:
+    a non-string one of those already degrades to "no warehouse reference", the
+    reported-and-continue behaviour #482 established for them. Hard-failing at
+    the boundary would replace a report with a crash, which is the opposite of
+    what this guard is for.
+    """
+    label = f"{kind} column"
+    _tml_string(entry.get("name"), f"{label} `name`")
+    _tml_mapping(entry.get("db_column_properties"), f"{label} `db_column_properties`")
+    return entry
+
+
 def _raw_physical_columns(body: dict, kind: str) -> list[dict]:
     """The verbatim physical-column list for a Table or SQL View document --
     `columns[]` for a `table:`, `sql_view_columns[]` for a `sql_view:`.
@@ -1506,7 +1543,7 @@ def _raw_physical_columns(body: dict, kind: str) -> list[dict]:
     `_normalized_physical_columns` below, never `body.get("columns")` directly.
     """
     key = "sql_view_columns" if kind == "sql_view" else "columns"
-    return _tml_list(body.get(key), f"{kind} {key}")
+    return [_check_physical_column(entry, kind) for entry in _tml_list(body.get(key), f"{kind} {key}")]
 
 
 def _normalize_physical_column(entry: dict, kind: str) -> dict:
@@ -1821,6 +1858,15 @@ def _build_dataset(prefix: str, entry: dict, table_doc, log: IssueLog) -> tuple[
     also the prefix every `column_id`/join reference in this dataset uses.
     """
     body = table_doc.body
+    # The three physical-source components are read into a dotted `source` and
+    # scanned for a stray `.`; a non-string there raises
+    # `TypeError: argument of type 'int' is not a container` from inside the
+    # `in` test, naming nothing. `joins_with` is a list of mappings the join
+    # reader walks per model_tables[] entry.
+    _tml_string(body.get("db"), "table `db`")
+    _tml_string(body.get("schema"), "table `schema`")
+    _tml_string(body.get("db_table"), "table `db_table`")
+    _tml_string(body.get("sql_query"), "sql_view `sql_query`")
     table_ref = entry.get("name")
     alias = entry.get("alias")
     kind = table_doc.kind
@@ -2296,7 +2342,9 @@ def _convert_join(
     """
     referencing_join = join.get("referencing_join")
     if referencing_join:
-        candidates = from_table_body.get("joins_with") or []
+        candidates = _tml_list(
+            from_table_body.get("joins_with"), "table `joins_with`"
+        )
         matched = next((jw for jw in candidates if jw.get("name") == referencing_join), None)
         if matched is None:
             log.add(
@@ -2439,6 +2487,7 @@ def convert(document_set: DocumentSet) -> OssieConversion:
     # (issue #469).
     _tml_mapping(model_body.get("properties"), "model `properties`")
     _tml_list(model_body.get("model_tables"), "model `model_tables`")
+    _tml_list(model_body.get("formulas"), "model `formulas`")
     model_columns = _tml_list(model_body.get("columns"), "model `columns`")
     for column in model_columns:
         _tml_mapping(column.get("properties"), "model column `properties`")
@@ -2891,7 +2940,7 @@ def convert(document_set: DocumentSet) -> OssieConversion:
         from_prefix = entry.get("alias") or table_ref
         if from_prefix not in dataset_bodies:
             continue  # the dataset itself failed to build; already logged
-        for join in entry.get("joins") or []:
+        for join in _tml_list(entry.get("joins"), "model_tables[] `joins`"):
             relationship, unrepresentable, candidate = _convert_join(
                 from_prefix, join, table_docs.get(from_prefix) or {}, known_datasets,
                 table_lookup, log,

@@ -297,3 +297,134 @@ def test_join_destination_of_the_wrong_container_type_is_skipped_and_reported():
 
     assert (relationship, unrepresentable, candidate) == (None, None, None)
     assert "TS-JOIN-DESTINATION-INVALID" in _codes(log.as_dicts())
+
+
+# -- nested types inside a Table's columns[], and the table body's parts -------
+
+def _table_body(name, columns, **overrides):
+    body = {"name": name, "db": "SALES", "schema": "PUBLIC", "db_table": name,
+            "connection": {"name": "My Snowflake"}, "columns": columns}
+    body.update(overrides)
+    return TmlDocument(kind="table", body=body, guid=None)
+
+
+def test_non_mapping_db_column_properties_is_named_not_crashed():
+    # The largest class measured over the shipped fixtures:
+    # `(physical.get("db_column_properties") or {}).get("data_type")` read `.get`
+    # off the float and raised AttributeError naming neither column nor key.
+    orders = _table_body("ORDERS", [{
+        "name": "Amount", "db_column_name": "O_TOTALPRICE",
+        "db_column_properties": 1.5,
+    }])
+    model = _model(columns=[{"name": "Amount", "column_id": "ORDERS::Amount",
+                             "properties": {"column_type": "ATTRIBUTE"}}])
+
+    with pytest.raises(ConversionError) as caught:
+        convert(_document_set(model, orders))
+
+    assert str(caught.value) == (
+        "table column `db_column_properties` must be a mapping, not float"
+    )
+
+
+def test_non_string_physical_column_name_is_named_not_crashed():
+    # The `(prefix, column.get("name"))` tuple the unsurfaced-column set is built
+    # from becomes unhashable, and TypeError talks about a tuple instead of the
+    # column that caused it.
+    orders = _table_body("ORDERS", [{
+        "name": ["Amount"], "db_column_name": "O_TOTALPRICE",
+        "db_column_properties": {"data_type": "DOUBLE"},
+    }])
+    model = _model(columns=[{"name": "Amount", "column_id": "ORDERS::Amount",
+                             "properties": {"column_type": "ATTRIBUTE"}}])
+
+    with pytest.raises(ConversionError) as caught:
+        convert(_document_set(model, orders))
+
+    assert str(caught.value) == "table column `name` must be a string, not list"
+
+
+def test_non_string_table_source_component_is_named_not_crashed():
+    # `any("." in part for part in (db, schema, db_table))` raised
+    # `TypeError: argument of type 'int' is not a container`.
+    orders = _table_body("ORDERS", [_column("Amount", "O_TOTALPRICE", "DOUBLE")], db=7)
+    model = _model(columns=[{"name": "Amount", "column_id": "ORDERS::Amount",
+                             "properties": {"column_type": "ATTRIBUTE"}}])
+
+    with pytest.raises(ConversionError) as caught:
+        convert(_document_set(model, orders))
+
+    assert str(caught.value) == "table `db` must be a string, not int"
+
+
+def test_model_formulas_entry_of_the_wrong_container_type():
+    # The formulas loop takes `f.get("id")`; the guard that already covers
+    # `columns` and `model_tables` simply did not include `formulas`.
+    orders = _table("ORDERS", [_column("Amount", "O_TOTALPRICE", "DOUBLE")])
+    model = TmlDocument(
+        kind="model",
+        body={"name": "Sales Analytics", "model_tables": [{"name": "ORDERS"}],
+              "columns": [], "formulas": ["formula_x"]},
+        guid=None,
+    )
+
+    with pytest.raises(ConversionError) as caught:
+        convert(_document_set(model, orders))
+
+    assert str(caught.value) == "model `formulas` entries must be mappings, not str"
+
+
+def test_db_column_name_and_sql_output_column_keep_their_graceful_path():
+    # The boundary of this guard set: #482 established "report it, surface the
+    # column without a warehouse reference" for these two, so a non-string must
+    # still convert rather than hard-fail at the read boundary.
+    orders = _table("ORDERS", [_column("Amount", ["O_TOTALPRICE"], "DOUBLE")])
+    model = _model(columns=[{"name": "Amount", "column_id": "ORDERS::Amount",
+                             "properties": {"column_type": "ATTRIBUTE"}}])
+
+    result = convert(_document_set(model, orders))
+
+    assert "TS-COLUMN-DB-NAME-INVALID" in _codes(result.issues.as_dicts())
+    assert result.model["datasets"][0]["fields"], "the column still surfaces"
+
+
+def test_model_tables_joins_entry_of_the_wrong_container_type():
+    # `for join in entry.get("joins") or []` walked a string's characters and then
+    # raised AttributeError on `join.get(...)`.
+    orders = _table("ORDERS", [_column("Amount", "O_TOTALPRICE", "DOUBLE")])
+    model = TmlDocument(
+        kind="model",
+        body={"name": "Sales Analytics",
+              "model_tables": [{"name": "ORDERS", "joins": ["orders_to_customers"]}],
+              "columns": []},
+        guid=None,
+    )
+
+    with pytest.raises(ConversionError) as caught:
+        convert(_document_set(model, orders))
+
+    assert str(caught.value) == "model_tables[] `joins` entries must be mappings, not str"
+
+
+def test_table_joins_with_entry_of_the_wrong_container_type():
+    # The same shape on the Table side: `_convert_join` looks up the referenced
+    # join by walking `joins_with[]`.
+    orders = TmlDocument(
+        kind="table",
+        body={"name": "ORDERS", "db": "SALES", "schema": "PUBLIC", "db_table": "ORDERS",
+              "connection": {"name": "My Snowflake"},
+              "columns": [{"name": "Amount", "db_column_name": "O_TOTALPRICE",
+                           "db_column_properties": {"data_type": "DOUBLE"}}],
+              "joins_with": ["orders_to_customers"]},
+        guid=None,
+    )
+    model = _model(columns=[{"name": "Amount", "column_id": "ORDERS::Amount",
+                             "properties": {"column_type": "ATTRIBUTE"}}],
+                  )
+    model.body["model_tables"] = [{"name": "ORDERS", "joins": [
+        {"referencing_join": "orders_to_customers", "with": "CUSTOMERS"}]}]
+
+    with pytest.raises(ConversionError) as caught:
+        convert(DocumentSet(model=model, tables=(orders,)))
+
+    assert str(caught.value) == "table `joins_with` entries must be mappings, not str"
