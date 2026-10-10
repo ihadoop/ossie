@@ -428,3 +428,23 @@ def test_table_joins_with_entry_of_the_wrong_container_type():
         convert(DocumentSet(model=model, tables=(orders,)))
 
     assert str(caught.value) == "table `joins_with` entries must be mappings, not str"
+
+
+def test_non_mapping_connection_is_named_not_crashed():
+    # `(body.get("connection") or {}).get("name")` raised AttributeError on the
+    # string, naming neither the dataset nor the key.
+    orders = TmlDocument(
+        kind="table",
+        body={"name": "ORDERS", "db": "SALES", "schema": "PUBLIC", "db_table": "ORDERS",
+              "connection": "My Snowflake",
+              "columns": [{"name": "Amount", "db_column_name": "O_TOTALPRICE",
+                           "db_column_properties": {"data_type": "DOUBLE"}}]},
+        guid=None,
+    )
+    model = _model(columns=[{"name": "Amount", "column_id": "ORDERS::Amount",
+                             "properties": {"column_type": "ATTRIBUTE"}}])
+
+    with pytest.raises(ConversionError) as caught:
+        convert(_document_set(model, orders))
+
+    assert str(caught.value) == "table `connection` must be a mapping, not str"

@@ -1867,6 +1867,10 @@ def _build_dataset(prefix: str, entry: dict, table_doc, log: IssueLog) -> tuple[
     _tml_string(body.get("schema"), "table `schema`")
     _tml_string(body.get("db_table"), "table `db_table`")
     _tml_string(body.get("sql_query"), "sql_view `sql_query`")
+    # `(body.get("connection") or {}).get("name")` reads `.get` off whatever came
+    # back, so a non-mapping there is an AttributeError naming neither the dataset
+    # nor the key.
+    _tml_mapping(body.get("connection"), "table `connection`")
     table_ref = entry.get("name")
     alias = entry.get("alias")
     kind = table_doc.kind
