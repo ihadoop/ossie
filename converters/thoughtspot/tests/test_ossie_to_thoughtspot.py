@@ -371,6 +371,43 @@ class TestDocumentShapeIsCheckedBeforeItIsRead:
 
         assert str(caught.value) == f"the Ossie document is not convertible: {expected}"
 
+    @pytest.mark.parametrize("mutate, expected", [
+        pytest.param(lambda d: d["datasets"][0]["fields"][0].__setitem__("datatype", ["x"]),
+                     "datasets[0].fields[0].datatype must be a string, not list",
+                     id="datatype-unhashable"),
+        pytest.param(lambda d: d["datasets"][0]["fields"][0].__setitem__("label", ["x"]),
+                     "datasets[0].fields[0].label must be a string, not list",
+                     id="label-not-a-string"),
+        pytest.param(lambda d: d["datasets"][0].__setitem__("unique_keys", [7]),
+                     "datasets[0].unique_keys[0] must be a list, not int",
+                     id="unique-keys-entry-not-a-list"),
+        pytest.param(lambda d: d["datasets"][0].__setitem__("unique_keys", [["order_id"], [7]]),
+                     "datasets[0].unique_keys[1][0] must be a string, not int",
+                     id="unique-key-column-not-a-string"),
+    ])
+    def test_a_scalar_read_through_as_a_string_or_walked_two_deep_is_named(self, mutate, expected):
+        # `datatype` reaches a dict lookup in datatypes.py (an unhashable list is a
+        # TypeError there), `label` reaches `.strip()`, and each `unique_keys` entry
+        # is iterated into a column list -- so a non-list there is
+        # `TypeError: 'int' object is not iterable`.
+        document = self._document()
+        mutate(document)
+
+        with pytest.raises(ConversionError) as caught:
+            convert(document)
+
+        assert str(caught.value) == f"the Ossie document is not convertible: {expected}"
+
+    def test_nodes_read_wholesale_stay_unchecked(self):
+        # The boundary of this set, pinned so the next scalar added here has to
+        # cross it deliberately: `primary_key` elements are only ever compared as
+        # whole values, never iterated into anything, and an absent/`null`
+        # `unique_keys` means "no unique keys".
+        document = self._document()
+        document["datasets"][0]["primary_key"] = [7]
+        document["datasets"][0]["unique_keys"] = None
+        assert convert(document).documents.model.kind == "model"
+
     @pytest.mark.parametrize("path_to_container, expected", [
         pytest.param(lambda d: d.__setitem__("datasets", [None]),
                      "datasets[0] must be a mapping, not null", id="datasets"),

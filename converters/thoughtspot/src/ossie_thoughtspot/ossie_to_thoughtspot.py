@@ -2627,6 +2627,26 @@ def _require_extensions(extensions, path: str) -> None:
         _require_shape(entry.get("vendor_name"), str, f"{entry_path}.vendor_name", "a string")
 
 
+def _require_unique_keys(unique_keys, path: str) -> None:
+    """`unique_keys`, which the key reader walks two levels deep.
+
+    A `unique_keys: [7]` reached `list(entry)` and raised `TypeError: 'int'
+    object is not iterable` -- and unlike `primary_key`, whose elements are only
+    ever compared as whole values, each `unique_keys` entry is iterated into a
+    column list, so the shape has to hold.
+    """
+    if unique_keys is None:
+        return
+    _require_shape(unique_keys, list, f"{path}.unique_keys", "a list")
+    for index, entry in enumerate(unique_keys):
+        entry_path = f"{path}.unique_keys[{index}]"
+        _require_shape(entry, list, entry_path, "a list", present=True)
+        for column_index, column in enumerate(entry):
+            _require_shape(
+                column, str, f"{entry_path}[{column_index}]", "a string", present=True
+            )
+
+
 def _require_document_shape(semantic_model: dict) -> None:
     """Reject a document whose shape makes the readers below raise a bare
     AttributeError or TypeError, naming the path and the type found instead.
@@ -2647,12 +2667,15 @@ def _require_document_shape(semantic_model: dict) -> None:
         _require_shape(dataset, dict, path, "a mapping", present=True)
         _require_shape(dataset.get("name"), str, f"{path}.name", "a string")
         _require_shape(dataset.get("source"), str, f"{path}.source", "a string")
+        _require_unique_keys(dataset.get("unique_keys"), path)
         _require_extensions(dataset.get("custom_extensions"), path)
         fields = _require_shape(dataset.get("fields"), list, f"{path}.fields", "a list")
         for field_index, field in enumerate(fields or []):
             field_path = f"{path}.fields[{field_index}]"
             _require_shape(field, dict, field_path, "a mapping", present=True)
             _require_shape(field.get("name"), str, f"{field_path}.name", "a string")
+            _require_shape(field.get("label"), str, f"{field_path}.label", "a string")
+            _require_shape(field.get("datatype"), str, f"{field_path}.datatype", "a string")
             _require_shape(field.get("dimension"), dict, f"{field_path}.dimension", "a mapping")
             _require_expression(field.get("expression"), field_path)
             _require_extensions(field.get("custom_extensions"), field_path)
