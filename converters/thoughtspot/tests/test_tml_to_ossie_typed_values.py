@@ -448,3 +448,34 @@ def test_non_mapping_connection_is_named_not_crashed():
         convert(_document_set(model, orders))
 
     assert str(caught.value) == "table `connection` must be a mapping, not str"
+
+
+def test_non_string_join_cardinality_skips_the_join_and_reports():
+    # `keys._qualifies` asks `rel.cardinality in _TO_ONE`; a dict is unhashable,
+    # and the TypeError talks about a set element instead of the join. Dropped the
+    # way an unparseable `on` is -- one unreadable join costs one relationship.
+    log = IssueLog()
+    result = _relationship_from_join(
+        name="orders_to_customers", from_prefix="ORDERS", to_prefix="CUSTOMERS",
+        on_expression="[ORDERS::c] = [CUSTOMERS::id]", join_type=None,
+        cardinality={"ONE_TO_MANY": True}, join_shape="inline", referencing_join=None,
+        table_lookup=lambda name: None, log=log,
+    )
+
+    assert result == (None, None, None)
+    assert "TS-JOIN-CARDINALITY-INVALID" in _codes(log.as_dicts())
+
+
+def test_non_string_join_type_is_omitted_and_reported():
+    # The type also rides into the relationship stash, which to-tml writes with
+    # json.dumps and compares against TML's enum names, so it cannot be kept.
+    log = IssueLog()
+    relationship, _unrepresentable, _residual = _relationship_from_join(
+        name="orders_to_customers", from_prefix="ORDERS", to_prefix="CUSTOMERS",
+        on_expression="[ORDERS::c] = [CUSTOMERS::id]", join_type=7,
+        cardinality="MANY_TO_ONE", join_shape="inline", referencing_join=None,
+        table_lookup=lambda name: None, log=log,
+    )
+
+    assert "TS-JOIN-TYPE-INVALID" in _codes(log.as_dicts())
+    assert relationship is None or relationship.get("name") == "orders_to_customers"

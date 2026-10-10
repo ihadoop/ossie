@@ -2137,6 +2137,34 @@ def _relationship_from_join(
     apply to, so `from`/`to` there stay exactly TML's own, unswapped.
     """
     object_ref = f"relationship:{name}"
+    if cardinality is not None and not isinstance(cardinality, str):
+        # `keys._qualifies` tests `rel.cardinality in _TO_ONE`, and a dict is not
+        # hashable -- TypeError naming neither the join nor the key. Dropped like
+        # an unparseable `on` above: one unreadable join costs one relationship,
+        # not the model.
+        log.add(
+            code="TS-JOIN-CARDINALITY-INVALID",
+            severity=Severity.WARNING,
+            message=(
+                f"join {name!r} has cardinality {cardinality!r}, which is not a "
+                f"string; the join is skipped"
+            ),
+            object_ref=object_ref,
+        )
+        return None, None, None
+    if join_type is not None and not isinstance(join_type, str):
+        # The same value reaches the relationship stash, which to-tml then writes
+        # with json.dumps and compares against TML's own enum names.
+        log.add(
+            code="TS-JOIN-TYPE-INVALID",
+            severity=Severity.WARNING,
+            message=(
+                f"join {name!r} has type {join_type!r}, which is not a string; "
+                f"the join type is omitted"
+            ),
+            object_ref=object_ref,
+        )
+        join_type = None
     if on_expression and not isinstance(on_expression, str):
         # A truthy non-string `on` (a list or int in a hand-edited document)
         # would raise a bare AttributeError on the .strip() below. It is not a
